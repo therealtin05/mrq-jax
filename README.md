@@ -10,7 +10,6 @@ Implemented:
 
 * Continuous control
 * Episodic environments (haven't benchmark yet)
-* Core MR.Q algorithm
 * WandB logging
 
 
