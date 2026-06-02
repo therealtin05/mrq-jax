@@ -23,7 +23,6 @@ Not implemented:
 ## Results
 
 ![DMC Comparison](media/dmc_comparision.png)
-media/dmc_comparison.png
 
 ## Installation
 
