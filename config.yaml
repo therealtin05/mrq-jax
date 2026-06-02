@@ -1,0 +1,73 @@
+# Trainer Config
+trainer:
+  num_env_steps: 500_000
+  num_warmstart_steps: 10000
+  utd_ratio: 1.0
+  replay_buffer_size: 1_000_000
+  batch_size: 256
+  eval_frequency: 10000
+  num_eval_episodes: 10
+  log_dir: "./logs"
+  save_dir: "./checkpoints"
+  log_frequency: 5000
+  # save_frequency: 50000
+  seed: 42
+
+
+mrq:
+  batch_size: 256
+  num_qs: 2
+  num_bins: 65
+  low: -10
+  high: 10
+  enc_horizon: 5
+  rl_horizon: 3
+  latent_dim: 512
+  episodic: false
+  discount: 0.99
+  reward_coef: 0.1
+  termination_coef: 0.1
+  consistency_coef: 1.0
+  bc_coef: 0.0
+  rho: 0.5
+  lr: 3e-4
+  enc_lr: 1e-4
+  target_update_freq: 250
+  max_grad_norm: 20.0
+  pre_activation_weight: 1e-5
+  # TD3
+  exploration_noise: 0.2
+  target_policy_noise: 0.2
+  noise_clip: 0.3
+
+  za_encoder_hidden_layer_sizes: [256]
+  zs_encoder_hidden_layer_sizes: [512, 512]
+  zsa_encoder_hidden_layer_sizes: [512, 512]
+  critic_hidden_layer_sizes: [512, 512, 512]
+  policy_hidden_layer_sizes: [512, 512]
+
+env:
+  backend: dmc
+  env_name: hopper-hop
+  num_envs: 4
+  asynchronous: true
+
+  dmc: { obs_type: state }
+
+  
+wandb:
+  enabled: true
+  project: "my-mrq"
+  entity: null
+  name: null
+  group: null
+  job_type: "train"
+  tags: []
+  notes: null
+  mode: "online"
+
+  env_name: hopper-hop
+  num_envs: 4
+  asynchronous: true
+
+  dmc: { obs_type: state }

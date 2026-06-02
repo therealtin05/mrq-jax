@@ -1,0 +1,17 @@
+__pycache__/
+
+# logging
+outputs/
+results/
+MRQ.egg-info/
+.vscode/
+wandb/
+plot.py
+run.sh
+plots/
+*ipynb
+*.eps
+*.bmp
+*.tiff
+*.ico
+*.txt
