@@ -1,6 +1,6 @@
 # MRQ-JAX
 
-JAX implementation of **MR.Q: Towards General-Purpose Model-Free Reinforcement Learning**.
+JAX re-implementation of **MR.Q: Towards General-Purpose Model-Free Reinforcement Learning**.
 
 Paper: https://arxiv.org/abs/2501.16142
 
