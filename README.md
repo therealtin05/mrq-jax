@@ -9,7 +9,6 @@ Paper: https://arxiv.org/abs/2501.16142
 Implemented:
 
 * Continuous control
-* DeepMind Control (DMC)
 * Episodic environments (haven't benchmark yet)
 * Core MR.Q algorithm
 * WandB logging
