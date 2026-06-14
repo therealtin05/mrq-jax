@@ -9,10 +9,12 @@ import jax.tree_util as jtu
 from flax import linen as nn
 import optax
 
-from MRQ.world_model_mrq import WorldModel, WorldModelConfig, WorldModelTrainingState
+from MRQ.world_model import WorldModel, WorldModelConfig, WorldModelTrainingState
 from MRQ.custom_types import Params, RNGKey, Observation, Latent, Action, TrainingState, Metrics
 from MRQ.common.mdp_utils import multi_step_reward
-from flashbax.buffers.trajectory_buffer import TrajectoryBuffer, make_trajectory_buffer, TrajectoryBufferState, sample as sample_trajectory_buffer
+from MRQ.buffers.trajectory_buffer import TrajectoryBuffer, TrajectoryBufferState, sample as sample_trajectory_buffer
+from MRQ.buffers.prioritised_trajectory_buffer import sample as sample_prioritised_trajectory_buffer
+
 
 from MRQ.common.math_utils import two_hot, two_hot_inv, soft_ce
 
@@ -33,10 +35,14 @@ def percentile_normalization(x: jnp.ndarray,
 @dataclass
 class MRQConfig:
     # ReplayBuffer
+    prioritized: bool = True
+    prioritized_alpha: float = 0.4
+    min_priority: float = 1.0
 
     batch_size: int = 256
     num_qs: int = 2
-    num_bins: int = 1
+    num_bins_critic: int = 101
+    num_bins_reward: int = 65
     low: int = -10
     high: int = 10
     num_enc_layer: int = 2
@@ -66,7 +72,7 @@ class MRQConfig:
     # Hyperparam
     reward_coef: float = 0.1
     termination_coef: float = 0.1
-    consistency_coef: float = 20.0
+    consistency_coef: float = 1.0
     bc_coef: float = 0.0
     rho: float = 0.5
     lr: float = 3e-4
@@ -99,13 +105,18 @@ class MRQ(nn.Module):
         self._observation_size = observation_size
         self._action_size = action_size
         self._replay_buffer = replay_buffer
-
-        self.sample_buffer_enc = partial(sample_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.enc_horizon, period=1)
-        self.sample_buffer_rl = partial(sample_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.rl_horizon, period=1)
+        
+        if self._config.prioritized:
+            self.sample_buffer_enc = partial(sample_prioritised_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.enc_horizon, period=1, priority_exponent=config.prioritized_alpha)
+            self.sample_buffer_rl = partial(sample_prioritised_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.rl_horizon, period=1, priority_exponent=config.prioritized_alpha)
+        else:
+            self.sample_buffer_enc = partial(sample_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.enc_horizon, period=1)
+            self.sample_buffer_rl = partial(sample_trajectory_buffer, batch_size=config.batch_size, sequence_length=config.rl_horizon, period=1)
 
         wm_config = WorldModelConfig(
             num_qs=config.num_qs,
-            num_bins=config.num_bins,
+            num_bins_critic=config.num_bins_critic,
+            num_bins_reward=config.num_bins_reward,
             low=config.low,
             high=config.high,
             simnorm_dim=config.simnorm_dim,
@@ -273,7 +284,7 @@ class MRQ(nn.Module):
             reward_loss = jnp.sum(
                 lam[:, None] * soft_ce(
                     pred=reward_logits,
-                    target=two_hot(rewards, self._config.low, self._config.high, self._config.num_bins),
+                    target=two_hot(rewards, self._config.low, self._config.high, self._config.num_bins_reward),
                 ), axis=0, where=r_c_p_t_mask[:-1]
             ).mean()
 
@@ -283,12 +294,13 @@ class MRQ(nn.Module):
             if self._config.episodic:
                 termination_logits = self._wm.termination(termination_params, imagined_zsa).squeeze(-1)
                 termination_loss = jnp.sum(
-                    lam[:, None] * optax.sigmoid_binary_cross_entropy(termination_logits, terminated),
+                    # lam[:, None] * optax.sigmoid_binary_cross_entropy(termination_logits, terminated),
+                    lam[:, None] * jnp.square(termination_logits - terminated),
                     axis = 0,
                     where=r_c_p_t_mask[:-1]
                 ).mean()
 
-                pred_termination_binary = (jax.nn.sigmoid(termination_logits) > 0.5).astype(jnp.float32)
+                pred_termination_binary = (termination_logits > 0.5).astype(jnp.float32)
                 termination_float = terminated.astype(jnp.float32)
 
                 tp = jnp.sum(pred_termination_binary * termination_float * r_c_p_t_mask[:-1])
@@ -384,7 +396,6 @@ class MRQ(nn.Module):
         # Compute gradient norms for logging
         grad_norms = {
             'grad_norm/zs_encoder': optax.global_norm(zs_encoder_grads),
-            'grad_norm/za_encoder': optax.global_norm(za_encoder_grads),
             'grad_norm/zsa_encoder': optax.global_norm(zsa_encoder_grads),
             'grad_norm/dynamic': optax.global_norm(dynamics_grads),
             'grad_norm/reward': optax.global_norm(reward_grads),
@@ -415,15 +426,19 @@ class MRQ(nn.Module):
         observations = experience.obs[0]  # (batch, obs_dim)
         actions = experience.actions[0]  # (batch, act_dim)
         rewards = experience.rewards
-        next_observations = experience.next_obs[-1] # takes last next observations only
+
         terminated = jnp.logical_and(experience.dones, (jnp.logical_not(experience.truncations)))
         truncated = experience.truncations 
     
-        mask = jnp.cumsum(jnp.logical_or(terminated, truncated), axis=0)
-        mask = jnp.roll(mask, 1, axis=0)
-        continues = jnp.clip(mask.at[0].set(0), 0, 1) # (horizon, batch_size)
+
+        continues = jnp.cumsum(experience.dones, axis=0)
+        continues = jnp.clip(continues, 0, 1) # (horizon, batch_size)
         continues = jnp.logical_not(continues) # (horizon, batch_size) 
-        cum_reward, discounts = multi_step_reward(rewards, continues, self._config.discount) # (batch_size) , (1, )
+        cum_reward, final_valid_idx, discounts = multi_step_reward(rewards, continues, self._config.discount) # (batch_size) , (batch_size) , (batch_size, )
+
+        next_observations = jnp.take_along_axis(experience.next_obs, final_valid_idx[None, ..., None], axis=0).squeeze() # (batch_size, obs_dim)
+        terminated = jnp.take_along_axis(terminated, final_valid_idx[None, ...], axis=0).squeeze() # (batch_size, )
+        truncated = jnp.take_along_axis(truncated, final_valid_idx[None, ...], axis=0).squeeze() # (batch_size, )
 
         encoded_zs = self._wm.zs_encode(wm_state.zs_encoder_params, observations) # (batch_size, latent_dim)
 
@@ -451,13 +466,19 @@ class MRQ(nn.Module):
                 target_encoded_next_zsa,
             ).squeeze() # (batch_size, num_qs)
             
-            Q = Qs[..., :2].min(axis=-1)  # (batch_size)
-            td_targets = (cum_reward + (1 - terminated[-1]) * discounts * Q * training_state.target_reward_scale)/training_state.reward_scale  # (batch,)
+            Q = Qs.min(axis=-1)  # (batch_size)
+            td_targets = (cum_reward + (1 - terminated) * discounts * Q * training_state.target_reward_scale)/training_state.reward_scale  # (batch,)
             Q_logits = self._wm.Q(
                 critic_params, encoded_zsa,
             ).squeeze() # (batch_size, num_qs)
-            value_loss = jnp.mean(optax.losses.huber_loss(Q_logits, sg(td_targets[..., None])))
-            return value_loss, {"losses/value_loss": value_loss}
+            value_loss = optax.losses.huber_loss(Q_logits, sg(td_targets[..., None]))
+            value_loss = value_loss.mean() 
+            if self._config.prioritized:
+                priorities = jnp.abs(Q_logits - td_targets[..., None]).max(axis=-1)
+                priorities = jnp.maximum(priorities, self._config.min_priority)
+            else:
+                priorities = None
+            return value_loss, {"losses/value_loss": value_loss, "priorities": priorities}
         
         critic_grads, critic_info = jax.grad(_critic_loss, has_aux=True)(
             wm_state.critic_params
@@ -466,6 +487,12 @@ class MRQ(nn.Module):
         critic_updates, critic_optimizer_state = self._wm.critic_optimizer.update(critic_grads, wm_state.critic_optimizer_state, wm_state.critic_params)
         new_critic_params = optax.apply_updates(wm_state.critic_params, critic_updates)
 
+        new_priorities = critic_info.pop("priorities")
+        if self._config.prioritized:
+            # Update priorities in the replay buffer
+            new_buffer_state = self._replay_buffer.set_priorities(training_state.buffer_state, batch.indices, new_priorities)
+        else:
+            new_buffer_state = training_state.buffer_state
 
         ###########################
         # policy update
@@ -507,6 +534,8 @@ class MRQ(nn.Module):
             'grad_norm/policy': optax.global_norm(policy_grads),
             'grad_norm/critic': optax.global_norm(critic_grads),
             "metrics/reward_scale": training_state.reward_scale,
+            "metrics/batch_max_priority": jnp.max(new_priorities) if self._config.prioritized else 0.0,
+            "metrics/buffer_max_priority": jnp.squeeze(new_buffer_state.max_priority) if self._config.prioritized else 0.0,
         }
 
         wm_state = wm_state.replace(
@@ -518,7 +547,8 @@ class MRQ(nn.Module):
 
         training_state = training_state.replace(
             wm_state=wm_state,
-            steps=training_state.steps + 1
+            steps=training_state.steps + 1,
+            buffer_state=new_buffer_state
         )
 
         return training_state, random_key, critic_info | policy_info | grad_norms
@@ -542,7 +572,6 @@ class MRQ(nn.Module):
             "metrics/termination_positive_rate": 0.0,   # monitors class imbalance
             "metrics/termination_pred_positive_rate": 0.0,
             'grad_norm/zs_encoder': 0.0,
-            'grad_norm/za_encoder': 0.0,
             'grad_norm/zsa_encoder': 0.0,
             'grad_norm/dynamic': 0.0,
             'grad_norm/reward': 0.0,
@@ -562,8 +591,16 @@ class MRQ(nn.Module):
                 target_reward_params = jtu.tree_map(lambda x: x, wm_state.reward_params),
             )
             rewards = training_state.buffer_state.experience.rewards
-            current_index = training_state.buffer_state.current_index
-            mask = jnp.arange(rewards.shape[1]) < current_index
+            ### handle new buffer
+            valid_len = jnp.where(
+                training_state.buffer_state.is_full,
+                rewards.shape[1],
+                training_state.buffer_state.current_index,
+            )
+            mask = (
+                jnp.arange(rewards.shape[1])[None, :]
+                < valid_len[:, None]
+            )
             new_reward_scale = jnp.mean(jnp.abs(rewards), where=mask)
 
             training_state = training_state.replace(

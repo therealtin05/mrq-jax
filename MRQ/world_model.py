@@ -7,15 +7,15 @@ import flax.linen as nn
 
 import optax
 
-from .networks.networks import MLP, TD3Actor, MRQCritic
-from .networks.activations import simnorm
+from MRQ.networks.networks import MLP, TD3Actor, MRQCritic
+from MRQ.networks.activations import simnorm
 
 from functools import partial
 
 from typing import Tuple, Callable, Optional, List, Dict
 
-from .custom_types import Params, RNGKey, Observation, Latent, Action, Reward, TrainingState
-from .common.scale import RunningPercentileState
+from MRQ.custom_types import Params, RNGKey, Observation, Latent, Action, Reward, TrainingState
+from MRQ.common.scale import RunningPercentileState
 
 class WorldModelTrainingState(TrainingState):
     policy_params: Params
@@ -50,7 +50,8 @@ class WorldModelTrainingState(TrainingState):
 @dataclass
 class WorldModelConfig:
     num_qs: int
-    num_bins: int = 1 
+    num_bins_critic: int = 101
+    num_bins_reward: int = 65
     low: int = -10
     high: int = 10
     simnorm_dim: int = 8
@@ -81,8 +82,6 @@ class WorldModel(nn.Module):
             hidden_layer_size=self._config.critic_hidden_layer_sizes,
             num_qs=self._config.num_qs,
             output_dim=1, 
-            activation=jax.nn.mish,
-            kernel_init_final=nn.initializers.zeros,
         )
 
         self._dynamic = MLP(
@@ -92,9 +91,9 @@ class WorldModel(nn.Module):
             layer_sizes=(1,),
         )
         self._reward = MLP(
-            layer_sizes=(self._config.num_bins,),
-            kernel_init_final=nn.initializers.zeros,
+            layer_sizes=(self._config.num_bins_reward,),
         )  
+
         self._za_encoder = MLP(
             layer_sizes=self._config.za_encoder_hidden_layer_sizes, final_activation=jax.nn.elu,
         )
@@ -261,16 +260,13 @@ class WorldModel(nn.Module):
         r = self._reward.apply(reward_params, zsa)  
         return r # shape: (batch_size, num_bins)
 
-    @partial(jax.jit, static_argnames=("self", "apply_sigmoid"))
+    @partial(jax.jit, static_argnames=("self"))
     def termination(
         self,
         termination_params: Params, 
         zsa: Latent,
-        apply_sigmoid: bool = False, 
     ) -> jnp.ndarray:
         ter = self._termination.apply(termination_params, zsa)
-        if apply_sigmoid:
-            ter = nn.sigmoid(ter)
         return ter
 
     @partial(jax.jit, static_argnames=("self"))

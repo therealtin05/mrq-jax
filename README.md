@@ -17,7 +17,6 @@ Not implemented:
 
 * Image observations
 * Discrete actions
-* LAP (Loss Adjusted Prioritization)
 
 ## Results
 
@@ -40,6 +39,7 @@ Example:
 ```bash
 python3 main.py env.env_name=humanoid-run env.backend=dmc
 python3 main.py env.env_name=HalfCheetah-v4 env.backend=gymnasium mrq.episodic=true
+python3 main.py env.env_name=h1-sit_simple env.backend=humanoid-bench mrq.episodic=true
 ```
 
 ## Acknowledgements

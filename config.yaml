@@ -17,7 +17,8 @@ trainer:
 mrq:
   batch_size: 256
   num_qs: 2
-  num_bins: 65
+  num_bins_reward: 65
+  num_bins_critic: 1
   low: -10
   high: 10
   enc_horizon: 5
@@ -35,6 +36,9 @@ mrq:
   target_update_freq: 250
   max_grad_norm: 20.0
   pre_activation_weight: 1e-5
+  prioritized: true
+  prioritized_alpha: 0.4
+  min_priority: 1.0
   # TD3
   exploration_noise: 0.2
   target_policy_noise: 0.2

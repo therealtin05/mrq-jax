@@ -17,21 +17,28 @@ def multi_step_reward(
     discount: float,
 ) -> jnp.ndarray:
     """
-    Docstring for multi_step_reward
-    the output discounted_rewards is the cumulative discounted reward at each step.
-    the output discounts is the discount factor at the next step (ready to be multiplied with the critic value of the next step).
+        
     Args:
-        rewards: shape (horizon, batch_size, ...)
-        continues: shape (horizon, batch_size, ...)
+        rewards: shape (horizon, batch_size,)
+        continues: shape (horizon, batch_size,)
         discount: float
     Return:
         discounted_rewards: shape (batch_size)
-        discounts: shape (1, )
+        final_valid_idx: shape (batch_size, )
+        discounts: shape (batch_size, )
     """
+    mask = jnp.roll(continues, 1, axis=0)
+    mask = mask.at[0].set(1)
     discounts = discount ** jnp.arange(rewards.shape[0]) # shape (horizon, )
-    discounted_rewards = jnp.sum(rewards * discounts[..., None] * continues, axis=0) # shape (batch_size)
-    
-    return discounted_rewards,  discount * continues[-1] * discounts[-1] # shape (batch_size), shape (1, )
+    discounted_rewards = jnp.sum(rewards * discounts[..., None] * mask, axis=0) # shape (batch_size) ### discounted reward at each step
+
+    # example 1: continues = [1, 1, 0, 0, 0] then mask = [1, 1, 1, 0, 0] then final_valid_idx = 2
+    # example 2: continues = [0, 0, 0, 0, 0] then mask = [1, 0, 0, 0, 0] then final_valid_idx = 0
+    # example 3: continues = [1, 1, 1, 1, 1] then mask = [1, 1, 1, 1, 1] then final_valid_idx = -1
+    final_valid_idx = jnp.argmin(mask, axis=0) - 1 # shape (batch_size) 
+    return discounted_rewards, final_valid_idx, discount * discounts[final_valid_idx] # shape (batch_size), shape (batch_size), shape (batch_size, )
+
+
 
 @partial(jax.jit, static_argnames=("play_step_fn", "episode_length"))
 def generate_unroll(

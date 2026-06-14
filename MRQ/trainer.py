@@ -16,10 +16,9 @@ from tqdm import tqdm
 
 from MRQ.mrq import MRQ, MRQConfig, MRQTrainingState
 from MRQ.buffers.transitions import Transition
-from flashbax.buffers.trajectory_buffer import make_trajectory_buffer
-from MRQ.common.mdp_utils import generate_unroll, get_mask_from_transitions
+from MRQ.buffers.trajectory_buffer import make_trajectory_buffer
+from MRQ.buffers.prioritised_trajectory_buffer import make_prioritised_trajectory_buffer
 from MRQ.envs.dmcontrol import make_dmc_env
-
 from MRQ.custom_types import RNGKey, TrainingState
 
 @dataclass
@@ -35,7 +34,7 @@ class TrainerConfig:
     save_dir: str = "./checkpoints"
     log_frequency: int = 1024
     seed: int = 42
-        
+
 class Trainer:
 
     def __init__(self, trainer_config: TrainerConfig, 
@@ -67,8 +66,11 @@ class Trainer:
                 env.action_space.seed(seed)
                 env.observation_space.seed(seed)
                 return env
+            elif env_config.backend == "humanoid-bench":
+                import humanoid_bench
+                return make_gym_env(env_config.env_name, seed)
             else:
-                raise ValueError("Environment not supported:", env_config)
+                raise ValueError("Environment not supported:", env_config)  
 
         if env_config.asynchronous:
             vector_env_cls = gym.vector.AsyncVectorEnv
@@ -78,7 +80,7 @@ class Trainer:
             [
                 partial(make_env, env_config, seed)
                 for seed in range(trainer_config.seed, trainer_config.seed + env_config.num_envs)
-            ]
+            ],
         )
 
         self._env = env
@@ -87,15 +89,26 @@ class Trainer:
         self._eval_env = make_env(env_config, trainer_config.seed)
         # Define once, at __init__ or before the loop
 
-
-        self.replay_buffer = make_trajectory_buffer(
-            max_length_time_axis=trainer_config.replay_buffer_size // env_config.num_envs, # Maximum length of the buffer along the time axis. 
-            min_length_time_axis=16, # Minimum length across the time axis before we can sample.
-            sample_batch_size=mrq_config.batch_size, # Batch size of trajectories sampled from the buffer.
-            add_batch_size=env_config.num_envs, # Batch size of trajectories added to the buffer.
-            sample_sequence_length=mrq_config.enc_horizon, # Sequence length of trajectories sampled from the buffer. ### DEBUG
-            period=1, # Period at which we sample trajectories from the buffer.
-        )
+        if mrq_config.prioritized:
+            self.replay_buffer = make_prioritised_trajectory_buffer(
+                max_length_time_axis=trainer_config.replay_buffer_size // env_config.num_envs, # Maximum length of the buffer along the time axis. 
+                min_length_time_axis=16, # Minimum length across the time axis before we can sample.
+                sample_batch_size=mrq_config.batch_size, # Batch size of trajectories sampled from the buffer.
+                add_batch_size=env_config.num_envs, # Batch size of trajectories added to the buffer.
+                sample_sequence_length=mrq_config.enc_horizon, # Sequence length of trajectories sampled from the buffer. ### DEBUG
+                period=1, # Period at which we sample trajectories from the buffer.
+                priority_exponent=mrq_config.prioritized_alpha,
+            )
+        else:
+            self.replay_buffer = make_trajectory_buffer(
+                max_length_time_axis=trainer_config.replay_buffer_size // env_config.num_envs, # Maximum length of the buffer along the time axis. 
+                min_length_time_axis=16, # Minimum length across the time axis before we can sample.
+                sample_batch_size=mrq_config.batch_size, # Batch size of trajectories sampled from the buffer.
+                add_batch_size=env_config.num_envs, # Batch size of trajectories added to the buffer.
+                sample_sequence_length=mrq_config.enc_horizon, # Sequence length of trajectories sampled from the buffer. ### DEBUG
+                period=1, # Period at which we sample trajectories from the buffer.
+            )
+        
         self.add_experience = jax.jit(self.replay_buffer.add)
 
         self.mrq = MRQ(
@@ -176,8 +189,6 @@ class Trainer:
         return eval_metrics, random_key
 
                     
-
-
         
     @partial(jax.jit, static_argnames=("self", "num_updates"))
     def update(
@@ -221,15 +232,12 @@ class Trainer:
         times_logged = 0
         obs, _ = self._env.reset()
 
-        # num_warmup_steps = int(
-        #     1000 * self._env_config.num_envs * self._trainer_config.utd_ratio,
-        # )
         num_warmup_steps = self._trainer_config.num_warmstart_steps
         pbar = tqdm(initial=0, total=self._trainer_config.num_env_steps)
 
 
         done = np.zeros(self._env_config.num_envs, dtype=bool)
-        is_adding_exp = np.zeros(self._env_config.num_envs, dtype=bool)
+        is_adding_exp = jnp.ones(self._env_config.num_envs, dtype=bool)
         while global_step < self._trainer_config.num_env_steps:
 
             if global_step <= num_warmup_steps:
@@ -247,28 +255,26 @@ class Trainer:
             transition = Transition(
                 obs=jnp.array(obs),
                 actions=jnp.array(action),
-                rewards=jnp.array(reward).squeeze(),
+                rewards=jnp.asarray(reward, dtype=jnp.float32).reshape(self._env_config.num_envs),
                 next_obs=jnp.array(next_obs),
-                dones=jnp.array(done, dtype=jnp.float32).squeeze(),
-                truncations=jnp.array(truncated, dtype=jnp.float32).squeeze(),
+                dones=jnp.array(done, dtype=jnp.float32).reshape(self._env_config.num_envs),
+                truncations=jnp.array(truncated, dtype=jnp.float32).reshape(self._env_config.num_envs),
             )
             transition = jtu.tree_map(
                 lambda x: jnp.expand_dims(x, 1), transition
             )   
 
-            # due to gym autoreset bug, last transition is corupted unlike brax
-            if not np.any(is_adding_exp):
-                buffer_state = self.add_experience(buffer_state, transition)
-                
+            buffer_state = self.add_experience(buffer_state, transition, is_adding_exp)
+
             training_state = training_state.replace(buffer_state=buffer_state)
 
             obs = next_obs
 
-            is_adding_exp = np.logical_or(terminated, truncated)
+            is_adding_exp = jnp.logical_not(done)
 
             global_step += self._env_config.num_envs
 
-            if np.any(done):
+            if jnp.any(done):
 
                 for ienv in range(self._env_config.num_envs):
                     if done[ienv]:
@@ -289,7 +295,6 @@ class Trainer:
 
             if global_step >= num_warmup_steps:
                 if global_step == num_warmup_steps:
-                    # print('Pre-training on seed data...')
                     # num_updates = num_warmup_steps # follows TDMPC2
                     num_updates = max(1, int(self._env_config.num_envs * self._trainer_config.utd_ratio)) # exactly follows MRQ
                 else:
@@ -298,6 +303,7 @@ class Trainer:
                 training_state, random_key, train_metrics = self.update(
                     training_state, random_key, num_updates
                 )
+                buffer_state = training_state.buffer_state # massive bug fixed :)
 
                 # Average across the internal scan dimension (num_updates) so each update()
                 # contributes one scalar per metric to the accumulator.
@@ -334,5 +340,3 @@ class Trainer:
             pbar.update(self._env_config.num_envs)
 
         pbar.close()
-
-
