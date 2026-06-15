@@ -20,6 +20,7 @@ from MRQ.buffers.trajectory_buffer import make_trajectory_buffer
 from MRQ.buffers.prioritised_trajectory_buffer import make_prioritised_trajectory_buffer
 from MRQ.envs.dmcontrol import make_dmc_env
 from MRQ.custom_types import RNGKey, TrainingState
+from MRQ.envs.wrappers.action_repeat import RepeatAction
 
 @dataclass
 class TrainerConfig:
@@ -48,9 +49,10 @@ class Trainer:
         # Environment setup
         ##############################
         def make_env(env_config, seed):
-            def make_gym_env(env_id, seed):
+            def make_gym_env(env_id, seed, action_repeat=1):
                 env = gym.make(env_id)
                 env = gym.wrappers.RescaleAction(env, min_action=-1, max_action=1)
+                env = RepeatAction(env, action_repeat)
                 env = gym.wrappers.RecordEpisodeStatistics(env)
                 env = gym.wrappers.Autoreset(env)
                 env.action_space.seed(seed)
@@ -68,7 +70,7 @@ class Trainer:
                 return env
             elif env_config.backend == "humanoid-bench":
                 import humanoid_bench
-                return make_gym_env(env_config.env_name, seed)
+                return make_gym_env(env_config.env_name, seed, action_repeat=2)
             else:
                 raise ValueError("Environment not supported:", env_config)  
 
