@@ -61,7 +61,7 @@ env:
   
 wandb:
   enabled: true
-  project: "my-mrq"
+  project: "mrq-jax"
   entity: null
   name: null
   group: null
@@ -70,8 +70,6 @@ wandb:
   notes: null
   mode: "online"
 
-  env_name: hopper-hop
-  num_envs: 4
   asynchronous: true
 
   dmc: { obs_type: state }

@@ -1,4 +1,8 @@
-"""https://github.com/instadeepai/flashbax/blob/main/flashbax/buffers/prioritised_trajectory_buffer.py
+"""Modified from https://github.com/instadeepai/flashbax/blob/main/flashbax/buffers/trajectory_buffer.py
+Changes made:
+ - Current_index is now a vector of shape (add_batch_size,)
+ - Add a mask argument to the add function 
+ - Searchsorted based prioritized sampling)
 """
 
 import functools

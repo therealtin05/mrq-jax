@@ -1,4 +1,7 @@
 """Modified version of https://github.com/instadeepai/flashbax/blob/main/flashbax/buffers/trajectory_buffer.py
+Changes made:
+ - Current_index is now a vector of shape (add_batch_size,)
+ - Add a mask argument to the add function 
 """
 
 import functools

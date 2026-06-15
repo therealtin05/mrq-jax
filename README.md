@@ -4,14 +4,9 @@ JAX re-implementation of **MR.Q: Towards General-Purpose Model-Free Reinforcemen
 
 Paper: https://arxiv.org/abs/2501.16142
 
+Kaggle setup: https://www.kaggle.com/code/therealtin/public-mrq-jax
+
 ## Status
-
-Implemented:
-
-* Continuous control
-* Episodic environments (haven't benchmark yet)
-* WandB logging
-
 
 Not implemented:
 
@@ -19,8 +14,13 @@ Not implemented:
 * Discrete actions
 
 ## Results
+New results
 
-![DMC Comparison](media/dmc_comparision.png)
+![LAP Comparision](media/comparison_lap.png)
+
+Old results (before implementing LAP)
+
+![DMC Comparison](media/comparison_no_lap.png)
 
 ## Installation
 
